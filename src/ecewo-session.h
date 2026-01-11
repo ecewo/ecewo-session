@@ -25,7 +25,7 @@ typedef struct
 // Initialize the session manager
 // Must be called before any other session functions
 // Starts a periodic cleanup timer
-// Returns: 1 on success, 0 on failure
+// Returns: 0 on success, -1 on failure
 int session_init(void);
 
 // Cleanup all sessions and free resources
@@ -47,13 +47,13 @@ Session *session_find(const char *id);
 
 // Regenerate session ID (for security after privilege escalation)
 // Keeps session data and expiry time
-// Returns: 1 on success, 0 on failure
+// Returns: 0 on success, -1 on failure
 // Use case: After login to prevent session fixation attacks
 int session_regenerate(Session *sess);
 
 // Set a key-value pair in session data
 // Values are URL-encoded and stored efficiently
-// Returns: 1 on success, 0 on failure (e.g., size limit exceeded)
+// Returns: 0 on success, -1 on failure (e.g., size limit exceeded)
 int session_value_set(Session *sess, const char *key, const char *value);
 
 // Get a value from session data by key
@@ -66,7 +66,7 @@ int session_value_set(Session *sess, const char *key, const char *value);
 char *session_value_get(Session *sess, const char *key, Arena *arena);
 
 // Remove a key-value pair from session data
-// Returns: 1 on success, 0 on failure
+// Returns: 0 on success, -1 on failure
 int session_value_remove(Session *sess, const char *key);
 
 // Free a session and clear its data

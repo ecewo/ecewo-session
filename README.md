@@ -24,7 +24,7 @@ int main(void) {
     server_init();
 
     // Initialize session system
-    if (!session_init()) {
+    if (session_init() != 0) {
         fprintf(stderr, "Failed to initialize session system!\n");
         return 1;
     }
@@ -53,7 +53,7 @@ int session_init(void)
 
 **Example:**
 ```c
-if (!session_init()) {
+if (session_init() != 0) {
     fprintf(stderr, "CRITICAL: Session initialization failed\n");
     return 1;
 }
@@ -156,7 +156,7 @@ void handle_login(Req *req, Res *res) {
     Session *sess = session_get(req);
     if (sess) {
         // Regenerate ID after login for security
-        if (!session_regenerate(sess)) {
+        if (session_regenerate(sess) != 0) {
             send_text(res, INTERNAL_SERVER_ERROR, "Session regeneration failed");
             return;
         }
@@ -520,7 +520,7 @@ void handle_logout(Req *req, Res *res) {
 int main(void) {
     server_init();
     
-    if (!session_init()) {
+    if (session_init() != 0) {
         fprintf(stderr, "Session init failed\n");
         return 1;
     }
@@ -594,7 +594,7 @@ void handle_login_with_regeneration(Req *req, Res *res) {
     Session *sess = session_get(req);
     if (sess) {
         // User has existing session - regenerate for security
-        if (!session_regenerate(sess)) {
+        if (session_regenerate(sess) != 0) {
             send_text(res, INTERNAL_SERVER_ERROR, "Security update failed");
             return;
         }
@@ -625,7 +625,7 @@ void handle_privilege_escalation(Req *req, Res *res) {
     
     // Before granting admin privileges, regenerate session ID
     // This prevents session fixation attacks
-    if (!session_regenerate(sess)) {
+    if (session_regenerate(sess) != 0) {
         send_text(res, INTERNAL_SERVER_ERROR, "Security update failed");
         return;
     }

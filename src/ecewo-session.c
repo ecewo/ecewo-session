@@ -129,7 +129,7 @@ static int get_random_bytes(unsigned char *buffer, size_t length) {
 #else
   int fd = open("/dev/urandom", O_RDONLY);
   if (fd < 0)
-    return 0;
+    return -1;
 
   size_t bytes_read = 0;
   while (bytes_read < length) {
@@ -138,13 +138,13 @@ static int get_random_bytes(unsigned char *buffer, size_t length) {
       if (errno == EINTR)
         continue;
       close(fd);
-      return 0;
+      return -1;
     }
     bytes_read += (size_t)result;
   }
 
   close(fd);
-  return 1;
+  return 0;
 #endif
 }
 
@@ -154,7 +154,7 @@ static int generate_session_id(char *buffer) {
   if (!get_random_bytes(entropy, SESSION_ID_LEN)) {
     fprintf(stderr, "CRITICAL: Cryptographically secure random generation failed\n");
     fprintf(stderr, "Cannot create secure session IDs - aborting session creation\n");
-    return 0; // FAIL
+    return -1; // FAIL
   }
 
   const char charset[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -166,7 +166,7 @@ static int generate_session_id(char *buffer) {
 
   memset(entropy, 0, SESSION_ID_LEN);
   buffer[SESSION_ID_LEN] = '\0';
-  return 1;
+  return 0;
 }
 
 static void cleanup_expired_sessions_locked(void) {
@@ -197,17 +197,17 @@ static void cleanup_timer_cb(uv_timer_t *handle) {
 
 int session_init(void) {
   if (initialized)
-    return 1;
+    return 0;
 
   const int initial_capacity = MAX_SESSIONS_DEFAULT;
   sessions = calloc(initial_capacity, sizeof(Session));
   if (!sessions)
-    return 0;
+    return -1;
 
   if (uv_mutex_init(&sessions_mutex) != 0) {
     free(sessions);
     sessions = NULL;
-    return 0;
+    return -1;
   }
 
   cleanup_timer = malloc(sizeof(uv_timer_t));
@@ -228,7 +228,7 @@ int session_init(void) {
 
   max_sessions = initial_capacity;
   initialized = 1;
-  return 1;
+  return 0;
 }
 
 void session_cleanup(void) {
@@ -262,11 +262,11 @@ void session_cleanup(void) {
 static int resize_sessions_locked(int new_capacity) {
   // Must be called with mutex locked
   if (new_capacity <= max_sessions)
-    return 1;
+    return 0;
 
   Session *new_sessions = realloc(sessions, new_capacity * sizeof(Session));
   if (!new_sessions)
-    return 0;
+    return -1;
 
   for (int i = max_sessions; i < new_capacity; i++) {
     memset(&new_sessions[i], 0, sizeof(Session));
@@ -274,7 +274,7 @@ static int resize_sessions_locked(int new_capacity) {
 
   sessions = new_sessions;
   max_sessions = new_capacity;
-  return 1;
+  return 0;
 }
 
 Session *session_create(int max_age) {
@@ -348,7 +348,7 @@ Session *session_find(const char *id) {
 
 int session_regenerate(Session *sess) {
   if (!sess || !initialized)
-    return 0;
+    return -1;
 
   uv_mutex_lock(&sessions_mutex);
 
@@ -363,16 +363,16 @@ int session_regenerate(Session *sess) {
 
   if (!found) {
     uv_mutex_unlock(&sessions_mutex);
-    return 0;
+    return -1;
   }
 
   if (!generate_session_id(sess->id)) {
     uv_mutex_unlock(&sessions_mutex);
-    return 0;
+    return -1;
   }
 
   uv_mutex_unlock(&sessions_mutex);
-  return 1;
+  return 0;
 }
 
 static void remove_key_from_data(char *data, const char *encoded_key) {
@@ -409,14 +409,14 @@ static void remove_key_from_data(char *data, const char *encoded_key) {
 
 int session_value_set(Session *sess, const char *key, const char *value) {
   if (!sess || !key || !value || !initialized)
-    return 0;
+    return -1;
 
   char *encoded_key = url_encode(key);
   char *encoded_value = url_encode(value);
   if (!encoded_key || !encoded_value) {
     free(encoded_key);
     free(encoded_value);
-    return 0;
+    return -1;
   }
 
   uv_mutex_lock(&sessions_mutex);
@@ -433,7 +433,7 @@ int session_value_set(Session *sess, const char *key, const char *value) {
     uv_mutex_unlock(&sessions_mutex);
     free(encoded_key);
     free(encoded_value);
-    return 0;
+    return -1;
   }
 
   size_t current_len = sess->data ? strlen(sess->data) : 0;
@@ -446,7 +446,7 @@ int session_value_set(Session *sess, const char *key, const char *value) {
     uv_mutex_unlock(&sessions_mutex);
     free(encoded_key);
     free(encoded_value);
-    return 0;
+    return -1;
   }
 
   if (sess->data && strlen(sess->data) > 0)
@@ -460,7 +460,7 @@ int session_value_set(Session *sess, const char *key, const char *value) {
     uv_mutex_unlock(&sessions_mutex);
     free(encoded_key);
     free(encoded_value);
-    return 0;
+    return -1;
   }
 
   if (current_len > 0) {
@@ -487,7 +487,7 @@ int session_value_set(Session *sess, const char *key, const char *value) {
   uv_mutex_unlock(&sessions_mutex);
   free(encoded_key);
   free(encoded_value);
-  return 1;
+  return 0;
 }
 
 char *session_value_get(Session *sess, const char *key, Arena *arena) {
@@ -564,7 +564,7 @@ char *session_value_get(Session *sess, const char *key, Arena *arena) {
 
 int session_value_remove(Session *sess, const char *key) {
   if (!sess || !key || !initialized)
-    return 0;
+    return -1;
 
   uv_mutex_lock(&sessions_mutex);
 
@@ -578,20 +578,20 @@ int session_value_remove(Session *sess, const char *key) {
 
   if (!found || !sess->data) {
     uv_mutex_unlock(&sessions_mutex);
-    return 0;
+    return -1;
   }
 
   char *encoded_key = url_encode(key);
   if (!encoded_key) {
     uv_mutex_unlock(&sessions_mutex);
-    return 0;
+    return -1;
   }
 
   remove_key_from_data(sess->data, encoded_key);
   free(encoded_key);
 
   uv_mutex_unlock(&sessions_mutex);
-  return 1;
+  return 0;
 }
 
 void session_free(Session *sess) {

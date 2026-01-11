@@ -25,7 +25,7 @@ if (PROJECT_IS_TOP_LEVEL AND NOT TARGET ecewo::ecewo)
 endif()
 
 if (PROJECT_IS_TOP_LEVEL AND TARGET ecewo::ecewo)
-  ecewo_add_plugin(cookie)
+  ecewo_plugin(cookie)
 endif()
 
 target_link_libraries(ecewo_session PUBLIC
@@ -33,14 +33,8 @@ target_link_libraries(ecewo_session PUBLIC
   ecewo::cookie
 )
 
-option(ECEWO_SESSION_BUILD_TESTS "Build tests" ON)
-
-if (PROJECT_IS_TOP_LEVEL AND ECEWO_SESSION_BUILD_TESTS AND TARGET ecewo::ecewo)
-
-  ecewo_add_plugins(
-    mock
-  )
-
+if (PROJECT_IS_TOP_LEVEL AND TARGET ecewo::ecewo)
+  ecewo_plugin(mock)
   enable_testing()
 
   add_executable(ecewo_session_test
@@ -77,5 +71,4 @@ if (PROJECT_IS_TOP_LEVEL AND ECEWO_SESSION_BUILD_TESTS AND TARGET ecewo::ecewo)
     NAME ecewo_session_all
     COMMAND ecewo_session_test
   )
-
 endif()

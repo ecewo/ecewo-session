@@ -15,8 +15,7 @@ extern "C" {
 
 // Session structure
 // Note: Session pointers remain valid until session_free() is called or session expires.
-typedef struct
-{
+typedef struct {
   char id[SESSION_ID_LEN + 1];
   char *data;
   time_t expires;

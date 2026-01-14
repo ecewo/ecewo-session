@@ -17,7 +17,7 @@ if (PROJECT_IS_TOP_LEVEL AND NOT TARGET ecewo::ecewo)
   FetchContent_Declare(
     ecewo
     GIT_REPOSITORY https://github.com/savashn/ecewo.git
-    GIT_TAG        dev
+    GIT_TAG        v3.1.0
     GIT_SHALLOW    TRUE
   )
 
@@ -25,16 +25,11 @@ if (PROJECT_IS_TOP_LEVEL AND NOT TARGET ecewo::ecewo)
 endif()
 
 if (PROJECT_IS_TOP_LEVEL AND TARGET ecewo::ecewo)
-  ecewo_plugin(cookie)
-endif()
+  ecewo_plugins(
+    cookie
+    mock
+  )
 
-target_link_libraries(ecewo_session PUBLIC
-  ecewo::ecewo
-  ecewo::cookie
-)
-
-if (PROJECT_IS_TOP_LEVEL AND TARGET ecewo::ecewo)
-  ecewo_plugin(mock)
   enable_testing()
 
   add_executable(ecewo_session_test
@@ -72,3 +67,8 @@ if (PROJECT_IS_TOP_LEVEL AND TARGET ecewo::ecewo)
     COMMAND ecewo_session_test
   )
 endif()
+
+target_link_libraries(ecewo_session PUBLIC
+  ecewo::ecewo
+  ecewo::cookie
+)

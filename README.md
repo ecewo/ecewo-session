@@ -8,6 +8,23 @@ The session management system provides secure server-side storage for user data.
 2. [API Reference](#api-reference)
 3. [Examples](#examples)
 
+## Installation
+
+Add to your `CMakeLists.txt`:
+
+```sh
+ecewo_plugins(
+    cookie
+    session
+)
+
+target_link_libraries(app PRIVATE
+    ecewo::ecewo
+    ecewo::cookie
+    ecewo::session
+)
+```
+
 ## Setup
 
 ```c

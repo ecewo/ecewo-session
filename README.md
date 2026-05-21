@@ -10,10 +10,10 @@ The session management system provides secure server-side storage for user data.
 
 ## Installation
 
-Add to your `CMakeLists.txt`:
+Add the plugins to your `CMakeLists.txt`:
 
-```sh
-ecewo_plugins(
+```cmake
+ecewo_add(
     cookie
     session
 )
@@ -25,7 +25,14 @@ target_link_libraries(app PRIVATE
 )
 ```
 
+> [!NOTE]
+> The session plugin depends on [ecewo-cookie](https://github.com/ecewo/ecewo-cookie). You need both plugins to use sessions.
+
 ## Setup
+
+The session store is owned by the application: it lives in the app's plugin data
+and is allocated from the app arena. Initialize it once during setup, on the
+event-loop thread, before `ecewo_listen()`:
 
 ```c
 // main.c
@@ -33,44 +40,50 @@ target_link_libraries(app PRIVATE
 #include "ecewo-session.h"
 #include <stdio.h>
 
-void cleanup_app(void) {
-    session_cleanup(); // Cleanup session system
-}
-
 int main(void) {
-    server_init();
+    ecewo_app_t *app = ecewo_create();
+    if (!app)
+        return 1;
 
-    // Initialize session system
-    if (session_init() != 0) {
+    // Initialize the session store for this app.
+    if (ecewo_session_init(app) != 0) {
         fprintf(stderr, "Failed to initialize session system!\n");
         return 1;
     }
 
-    server_atexit(cleanup_app);
-    server_listen(3000);
-    server_run();
+    // ... register routes with ECEWO_GET(app, ...), etc. ...
+
+    ecewo_listen(app, 3000);
     return 0;
 }
 ```
 
-> [!NOTE]
-> Session module depends on [ecewo-cookie](https://github.com/ecewo/ecewo-cookie). You need both modules to use sessions.
+Teardown is automatic: `ecewo_session_init()` registers an `ecewo_atexit()`
+callback that stops the cleanup timer and frees every session during graceful
+shutdown. There is no separate cleanup call.
 
 ## API Reference
 
-### `session_init()`
+### `ecewo_session_init()`
 
-Initializes the session system with background cleanup timer.
+Initializes the per-app session store and starts the background cleanup timer.
+
 ```c
-int session_init(void)
+int ecewo_session_init(ecewo_app_t *app)
 ```
 
-**Returns:** `1` on success, `0` on error  
-**Note:** Must be called once at program startup before any session operations
+**Parameters:**
+- `app` - The application instance
+
+**Returns:** `0` on success, `-1` on failure
+**Notes:**
+- Call once during app setup, before `ecewo_listen()` / `ecewo_run()`, on the event-loop thread.
+- Idempotent: a second call on the same app is a no-op.
+- Teardown is automatic via `ecewo_atexit()`.
 
 **Example:**
 ```c
-if (session_init() != 0) {
+if (ecewo_session_init(app) != 0) {
     fprintf(stderr, "CRITICAL: Session initialization failed\n");
     return 1;
 }
@@ -78,119 +91,123 @@ if (session_init() != 0) {
 
 ---
 
-### `session_cleanup()`
+### `ecewo_session_create()`
 
-Stops cleanup timer and frees all sessions.
+Creates a new session in the given app's store.
+
 ```c
-void session_cleanup(void)
-```
-
-**Note:** Should be called in `server_atexit()` callback
-
-**Example:**
-```c
-void cleanup_app(void) {
-    session_cleanup();
-    // ... other cleanup
-}
-
-server_atexit(cleanup_app);
-```
-
----
-
-### `session_create()`
-
-Creates a new session.
-```c
-Session *session_create(int max_age)
+ecewo_session_t *ecewo_session_create(ecewo_app_t *app, int max_age)
 ```
 
 **Parameters:**
+- `app` - The application instance (use `ecewo_req_app(req)` inside a handler)
 - `max_age` - Session validity duration in seconds
 
-**Returns:** Session pointer or `NULL` on error
+**Returns:** Session handle or `NULL` on failure
 
 **Example:**
 ```c
-// Create session with 1 hour (3600 seconds) validity
-Session *sess = session_create(3600);
-if (!sess) {
-    send_text(res, INTERNAL_SERVER_ERROR, "Failed to create session");
-    return;
+void handle_login(ecewo_request_t *req, ecewo_response_t *res) {
+    // Create a session valid for 1 hour
+    ecewo_session_t *sess = ecewo_session_create(ecewo_req_app(req), 3600);
+    if (!sess) {
+        ecewo_send_text(res, 500, "Failed to create session");
+        return;
+    }
+    // ...
 }
 ```
 
 ---
 
-### `session_find()`
+### `ecewo_session_find()`
 
-Finds an active session by ID with automatic expiry check.
+Finds an active session by ID with an automatic expiry check.
+
 ```c
-Session *session_find(const char *id)
+ecewo_session_t *ecewo_session_find(ecewo_app_t *app, const char *id)
 ```
 
 **Parameters:**
+- `app` - The application instance
 - `id` - Session ID to search for
 
-**Returns:** Session pointer or `NULL` if not found/expired
-
-**Features:**
-- Automatically renews session expiry on access (sliding window)
-- Returns `NULL` for expired sessions
+**Returns:** Session handle or `NULL` if not found or expired
 
 **Example:**
 ```c
-const char *session_id = "A7x9KmN2..."; // From cookie
-Session *sess = session_find(session_id);
-if (!sess) {
-    send_text(res, UNAUTHORIZED, "Session expired or invalid");
+ecewo_session_t *found = ecewo_session_find(ecewo_req_app(req), id);
+if (!found) {
+    ecewo_send_text(res, 401, "Session expired or invalid");
     return;
 }
 ```
 
 ---
 
-### `session_regenerate()`
+### `ecewo_session_id()`
 
-Generates new session ID while preserving data and expiry.
+Gets the session ID string.
+
 ```c
-int session_regenerate(Session *sess)
+const char *ecewo_session_id(const ecewo_session_t *sess)
+```
+
+**Parameters:**
+- `sess` - Session handle
+
+**Returns:** Session ID string or `NULL` if the session is invalid
+
+**Example:**
+```c
+ecewo_session_t *sess = ecewo_session_create(ecewo_req_app(req), 3600);
+const char *id = ecewo_session_id(sess);
+```
+
+---
+
+### `ecewo_session_regenerate()`
+
+Generates a new session ID while preserving data and expiry.
+
+```c
+int ecewo_session_regenerate(ecewo_session_t *sess)
 ```
 
 **Parameters:**
 - `sess` - Session to regenerate
 
-**Returns:** `1` on success, `0` on error
+**Returns:** `0` on success, `-1` on failure
 
-**Use case:** Prevent session fixation attacks after authentication
+**Use case:** Prevent session fixation attacks after authentication.
 
 **Example:**
 ```c
-void handle_login(Req *req, Res *res) {
+void handle_login(ecewo_request_t *req, ecewo_response_t *res) {
     // ... authenticate user ...
-    
-    Session *sess = session_get(req);
+
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (sess) {
-        // Regenerate ID after login for security
-        if (session_regenerate(sess) != 0) {
-            send_text(res, INTERNAL_SERVER_ERROR, "Session regeneration failed");
+        // Regenerate the ID after login for security
+        if (ecewo_session_regenerate(sess) != 0) {
+            ecewo_send_text(res, 500, "Session regeneration failed");
             return;
         }
-        session_send(res, sess, NULL);
+        ecewo_session_send(res, sess, NULL);
     }
-    
-    send_text(res, OK, "Logged in successfully");
+
+    ecewo_send_text(res, 200, "Logged in successfully");
 }
 ```
 
 ---
 
-### `session_value_set()`
+### `ecewo_session_set()`
 
 Stores a key-value pair in the session.
+
 ```c
-int session_value_set(Session *sess, const char *key, const char *value)
+int ecewo_session_set(ecewo_session_t *sess, const char *key, const char *value)
 ```
 
 **Parameters:**
@@ -198,276 +215,231 @@ int session_value_set(Session *sess, const char *key, const char *value)
 - `key` - Key name (automatically URL-encoded)
 - `value` - Value to store (automatically URL-encoded)
 
-**Returns:** `1` on success, `0` on error
+**Returns:** `0` on success, `-1` on failure
 
 **Features:**
-- Overwrites if key already exists
-- Enforces 4KB total data limit per session
+- Overwrites if the key already exists
+- Enforces a 4KB total data limit per session
 - Thread-safe
 
 **Example:**
 ```c
-Session *sess = session_create(3600);
-
-session_value_set(sess, "user_id", "12345");
-session_value_set(sess, "username", "john_doe");
-session_value_set(sess, "email", "john@example.com");
-session_value_set(sess, "role", "admin");
+ecewo_session_set(sess, "user_id", "12345");
+ecewo_session_set(sess, "username", "john_doe");
 
 // Special characters are handled automatically
-session_value_set(sess, "note", "Hello, World! 你好");
+ecewo_session_set(sess, "note", "Hello, World! 你好");
 ```
 
 ---
 
-### `session_value_get()`
+### `ecewo_session_get()`
 
 Retrieves a value from the session.
+
 ```c
-char *session_value_get(Session *sess, const char *key, Arena *arena)
+char *ecewo_session_get(ecewo_session_t *sess, const char *key, ecewo_arena_t *arena)
 ```
 
 **Parameters:**
 - `sess` - Source session
 - `key` - Key to retrieve
-- `arena` - Arena allocator for memory management, or `NULL` for `malloc`
+- `arena` - Arena allocator for the result, or `NULL` for `malloc`
 
 **Returns:** Decoded value or `NULL` if not found
 
 **Memory management:**
-- If `arena` is provided: Returns arena-allocated string (no manual free needed)
-- If `arena` is `NULL`: Returns malloc'd string (**caller must free**)
+- If `arena` is provided (e.g. `ecewo_req_arena(req)`): returns arena-allocated string, freed automatically when the response is sent.
+- If `arena` is `NULL`: returns a `malloc`'d string the **caller must free**.
 
 **Example:**
 ```c
-// Using arena (recommended)
-void handle_profile(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_profile(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (!sess) {
-        send_text(res, UNAUTHORIZED, "Not logged in");
+        ecewo_send_text(res, 401, "Not logged in");
         return;
     }
-    
-    // Arena-allocated - automatically freed with request
-    char *username = session_value_get(sess, "username", req->arena);
-    if (username) {
-        char *response = arena_sprintf(req->arena, "Welcome, %s!", username);
-        send_text(res, OK, response);
-    }
-}
 
-// Using malloc (requires manual free)
-void handle_profile(Req *req, Res *res) {
-    Session *sess = session_get(req);
-    if (!sess) {
-        send_text(res, UNAUTHORIZED, "Not logged in");
-        return;
-    }
-    
-    char *username = session_value_get(sess, "username", NULL);
+    // Arena-allocated - freed automatically with the request
+    char *username = ecewo_session_get(sess, "username", ecewo_req_arena(req));
     if (username) {
-        printf("Username: %s\n", username);
-        free(username);  // Must free
+        char *response = ecewo_sprintf(ecewo_req_arena(req), "Welcome, %s!", username);
+        ecewo_send_text(res, 200, response);
+    } else {
+        ecewo_send_text(res, 404, "No username");
     }
-    
-    send_text(res, OK, "OK!");
 }
 ```
 
 ---
 
-### `session_value_remove()`
+### `ecewo_session_remove()`
 
 Removes a key-value pair from the session.
+
 ```c
-int session_value_remove(Session *sess, const char *key)
+int ecewo_session_remove(ecewo_session_t *sess, const char *key)
 ```
 
 **Parameters:**
 - `sess` - Target session
 - `key` - Key to remove
 
-**Returns:** `1` on success, `0` on error
+**Returns:** `0` on success, `-1` on failure
 
 **Example:**
 ```c
-void handle_remove_cart_item(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_remove_cart_item(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (!sess) {
-        send_text(res, UNAUTHORIZED, "Unauthorized");
+        ecewo_send_text(res, 401, "Unauthorized");
         return;
     }
-    
-    const char *item_id = get_query(req, "item");
-    session_value_remove(sess, item_id);
-    
-    send_text(res, OK, "Item removed from cart");
+
+    const char *item_id = ecewo_query(req, "item");
+    ecewo_session_remove(sess, item_id);
+
+    ecewo_send_text(res, 200, "Item removed from cart");
 }
 ```
 
 ---
 
-### `session_get()`
+### `ecewo_session_from_request()`
 
-Extracts session from request cookie.
+Extracts the session from the request's `session` cookie.
+
 ```c
-Session *session_get(Req *req)
+ecewo_session_t *ecewo_session_from_request(const ecewo_request_t *req)
 ```
 
 **Parameters:**
 - `req` - HTTP request object
 
-**Returns:** Session pointer or `NULL` if no valid session
+**Returns:** Session handle or `NULL` if no valid session cookie
 
 **Example:**
 ```c
-void handle_protected_route(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_protected_route(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (!sess) {
-        send_text(res, UNAUTHORIZED, "Authentication required");
+        ecewo_send_text(res, 401, "Authentication required");
         return;
     }
-    
-    char *role = session_value_get(sess, "role", req->arena);
+
+    char *role = ecewo_session_get(sess, "role", ecewo_req_arena(req));
     if (role && strcmp(role, "admin") == 0) {
-        send_text(res, OK, "Admin access granted");
+        ecewo_send_text(res, 200, "Admin access granted");
     } else {
-        send_text(res, FORBIDDEN, "Admin access required");
+        ecewo_send_text(res, 403, "Admin access required");
     }
 }
 ```
 
 ---
 
-### `session_send()`
+### `ecewo_session_send()`
 
-Sends session cookie to client.
+Sends the session cookie to the client.
+
 ```c
-void session_send(Res *res, Session *sess, Cookie *options)
+void ecewo_session_send(ecewo_response_t *res, ecewo_session_t *sess, const ecewo_cookie_options_t *options)
 ```
 
 **Parameters:**
 - `res` - HTTP response object
 - `sess` - Session to send
-- `options` - Cookie options (or `NULL` for defaults)
+- `options` - Cookie options builder (or `NULL` for secure defaults)
 
-**Default cookie settings:**
-- `max_age` - Calculated from session expiry
-- `path` - `/`
-- `same_site` - `Lax`
-- `http_only` - `true`
-- `secure` - `false` (set to `true` for production HTTPS)
+**Default cookie settings (when `options` is `NULL`):**
+- `Max-Age` - Calculated from the session expiry
+- `Path` - `/`
+- `SameSite` - `Lax`
+- `HttpOnly` - on
+- `Secure` - off (enable for production HTTPS)
 
 **Example:**
 ```c
-void handle_login(Req *req, Res *res) {
-    // User authentication...
+void handle_login(ecewo_request_t *req, ecewo_response_t *res) {
+    // ... authenticate user ...
 
-    Session *sess = session_create(7200); // 2 hours
-    session_value_set(sess, "user_id", "12345");
-    session_value_set(sess, "username", "john_doe");
+    ecewo_session_t *sess = ecewo_session_create(ecewo_req_app(req), 7200); // 2 hours
+    ecewo_session_set(sess, "user_id", "12345");
+    ecewo_session_set(sess, "username", "john_doe");
 
-    Cookie options = {
-        .path = "/",
-        .domain = NULL,          // Same domain only
-        .same_site = "Strict",   // CSRF protection
-        .http_only = true,       // XSS protection
-        .secure = true           // HTTPS only (production)
-    };
+    ecewo_cookie_options_t *opts = ecewo_cookie_options_new();
+    ecewo_cookie_options_set_path(opts, "/");
+    ecewo_cookie_options_set_same_site(opts, ECEWO_COOKIE_SAMESITE_STRICT); // CSRF protection
+    ecewo_cookie_options_set_http_only(opts, 1);                            // XSS protection
+    ecewo_cookie_options_set_secure(opts, 1);                               // HTTPS only
 
-    session_send(res, sess, &options);
-    send_text(res, OK, "Login successful");
+    ecewo_session_send(res, sess, opts);
+    ecewo_cookie_options_free(opts);
+
+    ecewo_send_text(res, 200, "Login successful");
 }
 ```
 
 ---
 
-### `session_destroy()`
+### `ecewo_session_destroy()`
 
-Destroys session on both server and client.
+Destroys the session on both server and client.
+
 ```c
-void session_destroy(Res *res, Session *sess, Cookie *options)
+void ecewo_session_destroy(ecewo_response_t *res, ecewo_session_t *sess, const ecewo_cookie_options_t *options)
 ```
 
 **Parameters:**
 - `res` - HTTP response object
 - `sess` - Session to destroy
-- `options` - Cookie options (or `NULL` for defaults)
+- `options` - Cookie options builder (or `NULL` for defaults)
 
 **Actions:**
-1. Sends expired cookie to client (max_age=0)
-2. Frees session data from server memory
+1. Sends an expired cookie to the client (`Max-Age=0`)
+2. Frees the session data from server memory
 
 **Example:**
 ```c
-void handle_logout(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_logout(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (sess) {
-        session_destroy(res, sess, NULL);
+        ecewo_session_destroy(res, sess, NULL);
     }
-    
-    send_text(res, OK, "Logged out successfully");
+
+    ecewo_send_text(res, 200, "Logged out successfully");
 }
 ```
 
 ---
 
-### `session_free()`
+### `ecewo_session_free()`
 
 Frees a session from server memory only (no cookie sent).
+
 ```c
-void session_free(Session *sess)
+void ecewo_session_free(ecewo_session_t *sess)
 ```
 
 **Parameters:**
 - `sess` - Session to free
 
-**Use case:** Backend session cleanup (e.g., after database persistence)
+**Use case:** Backend session cleanup (e.g. after database persistence).
 
 **Example:**
 ```c
-void save_session_to_database(Session *sess) {
-    // Serialize session data
-    char *user_id = session_value_get(sess, "user_id", NULL);
+void save_session_to_database(ecewo_session_t *sess) {
+    char *user_id = ecewo_session_get(sess, "user_id", NULL);
     // ... save to database ...
     free(user_id);
-    
+
     // Free from memory after persisting
-    session_free(sess);
+    ecewo_session_free(sess);
 }
 ```
 
 ---
-
-### `session_print_all()`
-
-Prints all active sessions to console (debugging only).
-```c
-void session_print_all(void)
-```
-
-**Output format:**
-```
-=== Sessions ===
-[#00] id=A7x9KmN2..., expires in 3540s
-      username = john_doe
-      user_id = 12345
-      logged_in = true
-[#01] id=B2q8RtM5..., expires in 7123s
-      cart_item_101 = 2
-      cart_item_205 = 1
-================
-```
-
-**Example:**
-```c
-#ifdef ECEWO_DEBUG
-void handle_debug_sessions(Req *req, Res *res) {
-    session_print_all();
-    send_text(res, OK, "Sessions printed to console");
-}
-#endif
-```
 
 ## Examples
 
@@ -476,277 +448,199 @@ void handle_debug_sessions(Req *req, Res *res) {
 #include "ecewo.h"
 #include "ecewo-session.h"
 #include "ecewo-cookie.h"
+#include <string.h>
 
-void handle_login(Req *req, Res *res) {
-    const char *username = get_query(req, "username");
-    const char *password = get_query(req, "password");
-    
+void handle_login(ecewo_request_t *req, ecewo_response_t *res) {
+    const char *username = ecewo_query(req, "username");
+    const char *password = ecewo_query(req, "password");
+
     // Validate credentials (example only)
-    if (!username || !password || 
-        strcmp(username, "admin") != 0 || 
+    if (!username || !password ||
+        strcmp(username, "admin") != 0 ||
         strcmp(password, "secret") != 0) {
-        send_text(res, UNAUTHORIZED, "Invalid credentials");
+        ecewo_send_text(res, 401, "Invalid credentials");
         return;
     }
-    
-    // Create session
-    Session *sess = session_create(3600); // 1 hour
+
+    ecewo_session_t *sess = ecewo_session_create(ecewo_req_app(req), 3600); // 1 hour
     if (!sess) {
-        send_text(res, INTERNAL_SERVER_ERROR, "Session creation failed");
+        ecewo_send_text(res, 500, "Session creation failed");
         return;
     }
-    
-    session_value_set(sess, "user_id", "1");
-    session_value_set(sess, "username", username);
-    session_value_set(sess, "role", "admin");
-    
-    Cookie options = {
-        .path = "/",
-        .same_site = "Strict",
-        .http_only = true,
-        .secure = true  // HTTPS in production
-    };
-    
-    session_send(res, sess, &options);
-    send_text(res, OK, "Login successful");
+
+    ecewo_session_set(sess, "user_id", "1");
+    ecewo_session_set(sess, "username", username);
+    ecewo_session_set(sess, "role", "admin");
+
+    ecewo_cookie_options_t *opts = ecewo_cookie_options_new();
+    ecewo_cookie_options_set_path(opts, "/");
+    ecewo_cookie_options_set_same_site(opts, ECEWO_COOKIE_SAMESITE_STRICT);
+    ecewo_cookie_options_set_http_only(opts, 1);
+    ecewo_cookie_options_set_secure(opts, 1); // HTTPS in production
+
+    ecewo_session_send(res, sess, opts);
+    ecewo_cookie_options_free(opts);
+
+    ecewo_send_text(res, 200, "Login successful");
 }
 
-void handle_dashboard(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_dashboard(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (!sess) {
-        send_text(res, UNAUTHORIZED, "Please log in");
+        ecewo_send_text(res, 401, "Please log in");
         return;
     }
-    
-    char *username = session_value_get(sess, "username", req->arena);
-    char *response = arena_sprintf(req->arena, 
-        "<h1>Welcome, %s!</h1>", username);
-    
-    send_html(res, OK, response);
+
+    char *username = ecewo_session_get(sess, "username", ecewo_req_arena(req));
+    char *response = ecewo_sprintf(ecewo_req_arena(req),
+        "<h1>Welcome, %s!</h1>", username ? username : "guest");
+
+    ecewo_send_html(res, 200, response);
 }
 
-void handle_logout(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_logout(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (sess) {
-        session_destroy(res, sess, NULL);
+        ecewo_session_destroy(res, sess, NULL);
     }
-    
-    send_text(res, OK, "Logged out");
+
+    ecewo_send_text(res, 200, "Logged out");
 }
 
 int main(void) {
-    server_init();
-    
-    if (session_init() != 0) {
+    ecewo_app_t *app = ecewo_create();
+
+    if (ecewo_session_init(app) != 0) {
         fprintf(stderr, "Session init failed\n");
         return 1;
     }
-    
-    server_atexit(session_cleanup);
-    
-    get("/login", handle_login, NULL);
-    get("/dashboard", handle_dashboard, NULL);
-    get("/logout", handle_logout, NULL);
-    
-    server_listen(3000);
-    server_run();
+
+    ECEWO_GET(app, "/login", handle_login);
+    ECEWO_GET(app, "/dashboard", handle_dashboard);
+    ECEWO_GET(app, "/logout", handle_logout);
+
+    ecewo_listen(app, 3000);
     return 0;
 }
 ```
 
 ### Shopping Cart with Sessions
 ```c
-void handle_add_to_cart(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_add_to_cart(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (!sess) {
-        // Create anonymous cart session
-        sess = session_create(86400); // 24 hours
+        // Create an anonymous cart session
+        sess = ecewo_session_create(ecewo_req_app(req), 86400); // 24 hours
         if (!sess) {
-            send_text(res, INTERNAL_SERVER_ERROR, "Failed to create cart");
+            ecewo_send_text(res, 500, "Failed to create cart");
             return;
         }
     }
-    
-    const char *item_id = get_query(req, "item");
-    const char *quantity = get_query(req, "qty");
-    
+
+    const char *item_id = ecewo_query(req, "item");
+    const char *quantity = ecewo_query(req, "qty");
+
     if (!item_id || !quantity) {
-        send_text(res, BAD_REQUEST, "Missing item or quantity");
+        ecewo_send_text(res, 400, "Missing item or quantity");
         return;
     }
-    
-    // Store cart item
+
     char key[64];
     snprintf(key, sizeof(key), "cart_%s", item_id);
-    session_value_set(sess, key, quantity);
-    
-    session_send(res, sess, NULL);
-    send_text(res, OK, "Item added to cart");
+    ecewo_session_set(sess, key, quantity);
+
+    ecewo_session_send(res, sess, NULL);
+    ecewo_send_text(res, 200, "Item added to cart");
 }
 
-void handle_view_cart(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_view_cart(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (!sess) {
-        send_json(res, OK, "{\"items\":[]}");
+        ecewo_send_json(res, 200, "{\"items\":[]}");
         return;
     }
-    
-    // In real app, iterate through cart items from session
-    char *item1_qty = session_value_get(sess, "cart_101", req->arena);
-    char *item2_qty = session_value_get(sess, "cart_205", req->arena);
-    
-    char *response = arena_sprintf(req->arena,
+
+    ecewo_arena_t *arena = ecewo_req_arena(req);
+    char *item1_qty = ecewo_session_get(sess, "cart_101", arena);
+    char *item2_qty = ecewo_session_get(sess, "cart_205", arena);
+
+    char *response = ecewo_sprintf(arena,
         "{\"items\":[{\"id\":101,\"qty\":%s},{\"id\":205,\"qty\":%s}]}",
         item1_qty ? item1_qty : "0",
         item2_qty ? item2_qty : "0");
-    
-    send_json(res, OK, response);
+
+    ecewo_send_json(res, 200, response);
 }
 ```
 
 ### Session Regeneration for Security
 ```c
-void handle_login_with_regeneration(Req *req, Res *res) {
-    // Check if already logged in
-    Session *sess = session_get(req);
-    if (sess) {
-        // User has existing session - regenerate for security
-        if (session_regenerate(sess) != 0) {
-            send_text(res, INTERNAL_SERVER_ERROR, "Security update failed");
-            return;
-        }
-    } else {
-        // New login - create session
-        sess = session_create(3600);
-        if (!sess) {
-            send_text(res, INTERNAL_SERVER_ERROR, "Failed to create session");
-            return;
-        }
-    }
-    
-    // ... authenticate user ...
-    
-    session_value_set(sess, "authenticated", "true");
-    session_value_set(sess, "user_id", "12345");
-    
-    session_send(res, sess, NULL);
-    send_text(res, OK, "Login successful");
-}
-
-void handle_privilege_escalation(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_privilege_escalation(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (!sess) {
-        send_text(res, UNAUTHORIZED, "Not logged in");
+        ecewo_send_text(res, 401, "Not logged in");
         return;
     }
-    
-    // Before granting admin privileges, regenerate session ID
-    // This prevents session fixation attacks
-    if (session_regenerate(sess) != 0) {
-        send_text(res, INTERNAL_SERVER_ERROR, "Security update failed");
+
+    // Before granting admin privileges, regenerate the session ID.
+    // This prevents session fixation attacks.
+    if (ecewo_session_regenerate(sess) != 0) {
+        ecewo_send_text(res, 500, "Security update failed");
         return;
     }
-    
-    session_value_set(sess, "role", "admin");
-    session_send(res, sess, NULL);
-    
-    send_text(res, OK, "Admin privileges granted");
+
+    ecewo_session_set(sess, "role", "admin");
+    ecewo_session_send(res, sess, NULL);
+
+    ecewo_send_text(res, 200, "Admin privileges granted");
 }
 ```
 
 ### Multi-Factor Authentication with Sessions
 ```c
-void handle_mfa_initiate(Req *req, Res *res) {
-    // User provided username/password
-    const char *username = get_query(req, "username");
+void handle_mfa_initiate(ecewo_request_t *req, ecewo_response_t *res) {
+    const char *username = ecewo_query(req, "username");
     // ... verify credentials ...
-    
-    // Create temporary session for MFA flow
-    Session *sess = session_create(300); // 5 minutes only
-    session_value_set(sess, "mfa_pending", "true");
-    session_value_set(sess, "username", username);
-    
-    // Send MFA code via email/SMS
-    // ...
-    
-    session_send(res, sess, NULL);
-    send_text(res, OK, "MFA code sent");
+
+    // Create a temporary session for the MFA flow
+    ecewo_session_t *sess = ecewo_session_create(ecewo_req_app(req), 300); // 5 minutes
+    ecewo_session_set(sess, "mfa_pending", "true");
+    ecewo_session_set(sess, "username", username);
+
+    // Send the MFA code via email/SMS ...
+
+    ecewo_session_send(res, sess, NULL);
+    ecewo_send_text(res, 200, "MFA code sent");
 }
 
-void handle_mfa_verify(Req *req, Res *res) {
-    Session *sess = session_get(req);
+void handle_mfa_verify(ecewo_request_t *req, ecewo_response_t *res) {
+    ecewo_session_t *sess = ecewo_session_from_request(req);
     if (!sess) {
-        send_text(res, UNAUTHORIZED, "Session expired");
+        ecewo_send_text(res, 401, "Session expired");
         return;
     }
-    
-    char *pending = session_value_get(sess, "mfa_pending", req->arena);
+
+    char *pending = ecewo_session_get(sess, "mfa_pending", ecewo_req_arena(req));
     if (!pending || strcmp(pending, "true") != 0) {
-        send_text(res, BAD_REQUEST, "MFA not initiated");
+        ecewo_send_text(res, 400, "MFA not initiated");
         return;
     }
-    
-    const char *code = get_query(req, "code");
-    // ... verify MFA code ...
-    
-    // Upgrade to full session
-    session_value_remove(sess, "mfa_pending");
-    session_value_set(sess, "authenticated", "true");
-    
-    // Extend session and regenerate ID for security
-    Session *new_sess = session_create(3600); // Full 1-hour session
-    char *username = session_value_get(sess, "username", NULL);
-    session_value_set(new_sess, "username", username);
-    session_value_set(new_sess, "authenticated", "true");
-    free(username);
-    
-    // Destroy temporary session
-    session_free(sess);
-    
-    session_send(res, new_sess, NULL);
-    send_text(res, OK, "MFA verified");
-}
-```
 
-### Session Persistence to Database
-```c
-#include "ecewo-postgres.h"
+    // ... verify the MFA code from ecewo_query(req, "code") ...
 
-void persist_session_to_db(Session *sess, PGpool *pool) {
-    // Get session data
-    char *user_id = session_value_get(sess, "user_id", NULL);
-    if (!user_id) {
-        session_free(sess);
-        return;
+    // Upgrade to a full session
+    ecewo_session_t *new_sess = ecewo_session_create(ecewo_req_app(req), 3600);
+    char *username = ecewo_session_get(sess, "username", NULL);
+    if (username) {
+        ecewo_session_set(new_sess, "username", username);
+        free(username);
     }
-    
-    // Create database query
-    PGquery *pg = pg_query_create(pool, NULL);
-    
-    const char *params[] = {sess->id, user_id, "3600"};
-    pg_query_queue(pg, 
-        "INSERT INTO sessions (id, user_id, expires_at) VALUES ($1, $2, NOW() + INTERVAL '1 hour')",
-        3, params, NULL, NULL);
-    
-    pg_query_exec(pg);
-    
-    free(user_id);
-    
-    // Free from memory - now in database
-    session_free(sess);
-}
+    ecewo_session_set(new_sess, "authenticated", "true");
 
-void load_session_from_db(const char *session_id, PGpool *pool) {
-    // Query database
-    PGquery *pg = pg_query_create(pool, NULL);
-    
-    const char *params[] = {session_id};
-    pg_query_queue(pg,
-        "SELECT user_id, expires_at FROM sessions WHERE id = $1 AND expires_at > NOW()",
-        1, params, NULL, NULL);
-    
-    // ... handle result and recreate session in memory ...
-    
-    pg_query_exec(pg);
+    // Destroy the temporary session
+    ecewo_session_free(sess);
+
+    ecewo_session_send(res, new_sess, NULL);
+    ecewo_send_text(res, 200, "MFA verified");
 }
 ```

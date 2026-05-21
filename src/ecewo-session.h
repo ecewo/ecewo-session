@@ -1,3 +1,24 @@
+// Copyright 2025-2026 Savas Sahin <savashn@proton.me>
+
+// Permission is hereby granted, free of charge, to any person obtaining
+// a copy of this software and associated documentation files (the
+// "Software"), to deal in the Software without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Software, and to
+// permit persons to whom the Software is furnished to do so, subject to
+// the following conditions:
+
+// The above copyright notice and this permission notice shall be
+// included in all copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+// NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+// LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+// WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
 #ifndef ECEWO_SESSION_H
 #define ECEWO_SESSION_H
 
@@ -5,90 +26,100 @@
 extern "C" {
 #endif
 
-#include <time.h>
-#include <stdint.h>
-#include "ecewo.h"
-#include "ecewo-cookie.h"
+#include "ecewo-session-export.h"
 
-#define SESSION_ID_LEN 32
-#define MAX_SESSIONS_DEFAULT 10
+typedef struct ecewo_app_s ecewo_app_t;
+typedef struct ecewo_request_s ecewo_request_t;
+typedef struct ecewo_response_s ecewo_response_t;
+typedef struct ecewo_arena_s ecewo_arena_t;
+typedef struct ecewo_cookie_options_s ecewo_cookie_options_t;
+typedef struct ecewo_session_s ecewo_session_t;
 
-// Session structure
-// Note: Session pointers remain valid until session_free() is called or session expires.
-typedef struct {
-  char id[SESSION_ID_LEN + 1];
-  char *data;
-  time_t expires;
-} Session;
+/**
+ * Initialize the session manager for an application.
+ * Allocates the session store from the app arena, registers it as app data,
+ * starts a periodic cleanup timer, and schedules teardown via ecewo_atexit().
+ * Call once during app setup, before ecewo_listen() / ecewo_run(), and on the
+ * event-loop thread (i.e. from your route-registration step).
+ * Idempotent: a second call on the same app is a no-op.
+ * Returns 0 on success, -1 on failure.
+ */
+ECEWO_SESSION_EXPORT int ecewo_session_init(ecewo_app_t *app);
 
-// Initialize the session manager
-// Must be called before any other session functions
-// Starts a periodic cleanup timer
-// Returns: 0 on success, -1 on failure
-int session_init(void);
+/**
+ * Create a new session with specified max_age in seconds.
+ * Uses cryptographically secure random for session IDs.
+ * `app` selects the store created by ecewo_session_init(app).
+ * Returns an opaque session handle or NULL on failure.
+ */
+ECEWO_SESSION_EXPORT ecewo_session_t *ecewo_session_create(ecewo_app_t *app, int max_age);
 
-// Cleanup all sessions and free resources
-// Stops cleanup timer and destroys mutex
-// Should be called at application shutdown
-void session_cleanup(void);
+/**
+ * Find a session by ID within the given app's store.
+ * Returns an opaque session handle or NULL if not found/expired.
+ */
+ECEWO_SESSION_EXPORT ecewo_session_t *ecewo_session_find(ecewo_app_t *app, const char *id);
 
-// Create a new session with specified max_age in seconds
-// Uses cryptographically secure random for session IDs
-// Returns: Session pointer or NULL on failure
-// Note: Returned pointer is valid until session_free() or expiry
-Session *session_create(int max_age);
+/**
+ * Get the session ID string.
+ * Returns the session ID or NULL if session is invalid.
+ */
+ECEWO_SESSION_EXPORT const char *ecewo_session_id(const ecewo_session_t *sess);
 
-// Find a session by ID
-// Automatically renews expiry time on access (sliding window)
-// Cleans up expired sessions periodically
-// Returns: Session pointer or NULL if not found/expired
-Session *session_find(const char *id);
+/**
+ * Regenerate session ID (for security after privilege escalation).
+ * Keeps session data and expiry time.
+ * Returns 0 on success, -1 on failure.
+ */
+ECEWO_SESSION_EXPORT int ecewo_session_regenerate(ecewo_session_t *sess);
 
-// Regenerate session ID (for security after privilege escalation)
-// Keeps session data and expiry time
-// Returns: 0 on success, -1 on failure
-// Use case: After login to prevent session fixation attacks
-int session_regenerate(Session *sess);
+/**
+ * Set a key-value pair in session data.
+ * Values are URL-encoded and stored efficiently.
+ * Returns 0 on success, -1 on failure.
+ */
+ECEWO_SESSION_EXPORT int ecewo_session_set(ecewo_session_t *sess, const char *key, const char *value);
 
-// Set a key-value pair in session data
-// Values are URL-encoded and stored efficiently
-// Returns: 0 on success, -1 on failure (e.g., size limit exceeded)
-int session_value_set(Session *sess, const char *key, const char *value);
+/**
+ * Get a value from session data by key.
+ * Returns the value allocated in the provided arena, or NULL if not found.
+ * If arena is NULL, returns a malloc'd string (caller must free).
+ */
+ECEWO_SESSION_EXPORT char *ecewo_session_get(ecewo_session_t *sess, const char *key, ecewo_arena_t *arena);
 
-// Get a value from session data by key
-//
-// Memory management:
-// - If arena is provided: returns arena-allocated string (auto-freed with arena)
-// - If arena is NULL: returns malloc'd string (caller must free())
-//
-// Returns: String value or NULL if not found
-char *session_value_get(Session *sess, const char *key, Arena *arena);
+/**
+ * Remove a key-value pair from session data.
+ * Returns 0 on success, -1 on failure.
+ */
+ECEWO_SESSION_EXPORT int ecewo_session_remove(ecewo_session_t *sess, const char *key);
 
-// Remove a key-value pair from session data
-// Returns: 0 on success, -1 on failure
-int session_value_remove(Session *sess, const char *key);
+/**
+ * Free a session and clear its data.
+ * Thread-safe.
+ */
+ECEWO_SESSION_EXPORT void ecewo_session_free(ecewo_session_t *sess);
 
-// Free a session and clear its data
-// Thread-safe - can be called from any thread
-void session_free(Session *sess);
+/**
+ * Get session from request cookie.
+ * Extracts session ID from the "session" cookie and finds the session.
+ * Returns session handle or NULL if no session cookie or session not found.
+ */
+ECEWO_SESSION_EXPORT ecewo_session_t *ecewo_session_from_request(const ecewo_request_t *req);
 
-// Get session from request cookie
-// Convenience function that extracts session ID from cookie and finds session
-// Returns: Session pointer or NULL if no session cookie or session not found
-Session *session_get(Req *req);
+/**
+ * Send session cookie to client.
+ * Sets the "session" cookie with appropriate security flags.
+ * Uses options if provided, otherwise uses secure defaults.
+ * The options pointer must remain valid until this function returns.
+ */
+ECEWO_SESSION_EXPORT void ecewo_session_send(ecewo_response_t *res, ecewo_session_t *sess, const ecewo_cookie_options_t *options);
 
-// Send session cookie to client
-// Sets the "session" cookie with appropriate security flags
-// Uses options if provided, otherwise uses secure defaults
-void session_send(Res *res, Session *sess, Cookie *options);
-
-// Destroy session and send expiry cookie to client
-// Immediately expires the session cookie in browser
-void session_destroy(Res *res, Session *sess, Cookie *options);
-
-// Debug function: print all active sessions to stdout
-// Shows session IDs, expiry times, and stored data
-void session_print_all(void);
+/**
+ * Destroy session and send expiry cookie to client.
+ * Immediately expires the session cookie in browser.
+ * The options pointer must remain valid until this function returns.
+ */
+ECEWO_SESSION_EXPORT void ecewo_session_destroy(ecewo_response_t *res, ecewo_session_t *sess, const ecewo_cookie_options_t *options);
 
 #ifdef __cplusplus
 }

@@ -4,9 +4,10 @@ The session management system provides secure server-side storage for user data.
 
 ## Table of Contents
 
-1. [Setup](#setup)
-2. [API Reference](#api-reference)
-3. [Examples](#examples)
+1. [Installation](#installation)
+2. [Setup](#setup)
+3. [API Reference](#api-reference)
+4. [Examples](#examples)
 
 ## Installation
 
@@ -14,8 +15,8 @@ Add the plugins to your `CMakeLists.txt`:
 
 ```cmake
 ecewo_add(
-    cookie
-    session
+    cookie@v0.2.0
+    session@v0.2.0
 )
 
 target_link_libraries(app PRIVATE
@@ -80,6 +81,8 @@ int ecewo_session_init(ecewo_app_t *app)
 - Call once during app setup, before `ecewo_listen()` / `ecewo_run()`, on the event-loop thread.
 - Idempotent: a second call on the same app is a no-op.
 - Teardown is automatic via `ecewo_atexit()`.
+- The session store starts with a capacity of 10 sessions and doubles automatically when full.
+- A background cleanup timer runs every 60 seconds to evict expired sessions.
 
 **Example:**
 ```c
@@ -104,6 +107,10 @@ ecewo_session_t *ecewo_session_create(ecewo_app_t *app, int max_age)
 - `max_age` - Session validity duration in seconds
 
 **Returns:** Session handle or `NULL` on failure
+
+**Notes:**
+- Session IDs are 32-character URL-safe strings (`A-Z a-z 0-9 - _`) generated from a cryptographically secure source.
+- Thread-safe.
 
 **Example:**
 ```c
@@ -133,6 +140,9 @@ ecewo_session_t *ecewo_session_find(ecewo_app_t *app, const char *id)
 - `id` - Session ID to search for
 
 **Returns:** Session handle or `NULL` if not found or expired
+
+**Notes:**
+- Thread-safe.
 
 **Example:**
 ```c
@@ -181,6 +191,9 @@ int ecewo_session_regenerate(ecewo_session_t *sess)
 
 **Use case:** Prevent session fixation attacks after authentication.
 
+**Notes:**
+- Thread-safe.
+
 **Example:**
 ```c
 void handle_login(ecewo_request_t *req, ecewo_response_t *res) {
@@ -217,10 +230,10 @@ int ecewo_session_set(ecewo_session_t *sess, const char *key, const char *value)
 
 **Returns:** `0` on success, `-1` on failure
 
-**Features:**
-- Overwrites if the key already exists
-- Enforces a 4KB total data limit per session
-- Thread-safe
+**Notes:**
+- Overwrites if the key already exists.
+- Enforces a 4KB total data limit per session (measured on encoded data).
+- Thread-safe.
 
 **Example:**
 ```c
@@ -251,6 +264,9 @@ char *ecewo_session_get(ecewo_session_t *sess, const char *key, ecewo_arena_t *a
 **Memory management:**
 - If `arena` is provided (e.g. `ecewo_req_arena(req)`): returns arena-allocated string, freed automatically when the response is sent.
 - If `arena` is `NULL`: returns a `malloc`'d string the **caller must free**.
+
+**Notes:**
+- Thread-safe.
 
 **Example:**
 ```c
@@ -287,6 +303,9 @@ int ecewo_session_remove(ecewo_session_t *sess, const char *key)
 - `key` - Key to remove
 
 **Returns:** `0` on success, `-1` on failure
+
+**Notes:**
+- Thread-safe.
 
 **Example:**
 ```c
@@ -397,8 +416,11 @@ void ecewo_session_destroy(ecewo_response_t *res, ecewo_session_t *sess, const e
 - `options` - Cookie options builder (or `NULL` for defaults)
 
 **Actions:**
-1. Sends an expired cookie to the client (`Max-Age=0`)
+1. Sends the session cookie to the client — with `Max-Age=0` when `options` is `NULL` (so the browser deletes it immediately), or with the caller-supplied options otherwise
 2. Frees the session data from server memory
+
+> [!NOTE]
+> When passing custom `options`, you are responsible for including `Max-Age=0` (or an equivalent `Expires` in the past) to ensure the browser removes the cookie.
 
 **Example:**
 ```c
@@ -426,6 +448,9 @@ void ecewo_session_free(ecewo_session_t *sess)
 - `sess` - Session to free
 
 **Use case:** Backend session cleanup (e.g. after database persistence).
+
+**Notes:**
+- Thread-safe.
 
 **Example:**
 ```c

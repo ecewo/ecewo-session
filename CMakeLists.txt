@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(ecewo_session VERSION 0.1.0 LANGUAGES C)
+project(ecewo_session VERSION 0.2.0 LANGUAGES C)
 
 option(BUILD_SHARED_LIBS "Build ecewo_session as a shared library" OFF)
 

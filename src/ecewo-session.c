@@ -667,7 +667,10 @@ void ecewo_session_send(ecewo_response_t *res, ecewo_session_t *sess, const ecew
   ecewo_cookie_options_set_path(opts, "/");
   ecewo_cookie_options_set_same_site(opts, ECEWO_COOKIE_SAMESITE_LAX);
   ecewo_cookie_options_set_http_only(opts, 1);
-  ecewo_cookie_options_set_secure(opts, 0);
+  // Secure by default: the session id is a bearer credential and must not be
+  // sent over plaintext HTTP. Applications serving over plain HTTP (local
+  // development) pass their own cookie options to opt out.
+  ecewo_cookie_options_set_secure(opts, 1);
 
   ecewo_cookie_set(res, "session", id_copy, opts);
   ecewo_cookie_options_free(opts);
@@ -701,7 +704,9 @@ void ecewo_session_destroy(ecewo_response_t *res, ecewo_session_t *sess, const e
     ecewo_cookie_options_set_path(opts, "/");
     ecewo_cookie_options_set_same_site(opts, ECEWO_COOKIE_SAMESITE_LAX);
     ecewo_cookie_options_set_http_only(opts, 1);
-    ecewo_cookie_options_set_secure(opts, 0);
+    // Must mirror the attributes used when the cookie was set, or the browser
+    // keeps the original instead of expiring it.
+    ecewo_cookie_options_set_secure(opts, 1);
 
     ecewo_cookie_set(res, "session", id_copy, opts);
     ecewo_cookie_options_free(opts);
